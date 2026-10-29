@@ -1,22 +1,32 @@
-
-
 import re
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html import unescape
 
 import requests
+
+
+USER_AGENT = "Mozilla/5.0 (compatible; JobResearchParser/1.0)"
+MAX_RETRIES = 3
+
+
+class RateLimitError(Exception):
+    """Джерело обмежило частоту запитів."""
 
 
 def fetch_json(url):
     response = requests.get(
         url,
         timeout=20,
-        headers={"User-Agent": "LinkedInJobsParser/1.0"},
+        headers={"User-Agent": USER_AGENT},
     )
     response.raise_for_status()
     return response.json()
 
 
 def fetch_posts():
+    """Застаріле тестове джерело. Не використовувати для реальних вакансій."""
     data = fetch_json("https://jsonplaceholder.typicode.com/posts")
 
     return [
@@ -30,15 +40,81 @@ def fetch_posts():
 
 
 def clean_html(value):
-    """Видаляє HTML-теги та зайві пробіли."""
     value = re.sub(r"<[^>]+>", " ", value)
     value = unescape(value)
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _retry_delay(response, attempt):
+    """Визначає паузу за Retry-After, якщо її передав сервер."""
+    retry_after = response.headers.get("Retry-After")
+
+    if retry_after:
+        try:
+            return max(0, float(retry_after))
+        except ValueError:
+            try:
+                retry_date = parsedate_to_datetime(retry_after)
+                if retry_date.tzinfo is None:
+                    retry_date = retry_date.replace(tzinfo=timezone.utc)
+                return max(
+                    0,
+                    (retry_date - datetime.now(timezone.utc)).total_seconds(),
+                )
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+    return min(30 * (2 ** attempt), 300)
+
+
+def _get_linkedin_page(url, params):
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                timeout=20,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+        except requests.RequestException:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            time.sleep(min(5 * (2 ** attempt), 30))
+            continue
+
+        if response.status_code == 429:
+            delay = _retry_delay(response, attempt)
+
+            if attempt == MAX_RETRIES - 1:
+                raise RateLimitError(
+                    "LinkedIn повертає HTTP 429 після кількох спроб. "
+                    "Зупини збір і повтори пізніше або використовуй "
+                    "джерело з дозволеним API-доступом."
+                )
+
+            # Не повторюємо запит негайно — дотримуємося Retry-After.
+            time.sleep(delay)
+            continue
+
+        if response.status_code in (401, 403):
+            response.raise_for_status()
+
+        response.raise_for_status()
+        return response.text
+
+    raise RateLimitError("Не вдалося отримати сторінку LinkedIn.")
+
+
 def fetch_linkedin_jobs(query, country="United States", start=0):
-    """Отримує базову інформацію про вакансії з результатів пошуку."""
-    url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+    """Отримує вакансії з публічних результатів пошуку LinkedIn."""
+    url = (
+        "https://www.linkedin.com/jobs-guest/"
+        "jobs/api/seeMoreJobPostings/search"
+    )
 
     params = {
         "keywords": query,
@@ -46,15 +122,8 @@ def fetch_linkedin_jobs(query, country="United States", start=0):
         "start": start,
     }
 
-    response = requests.get(
-        url,
-        params=params,
-        timeout=20,
-        headers={"User-Agent": "Mozilla/5.0"},
-    )
-    response.raise_for_status()
+    html = _get_linkedin_page(url, params)
 
-    html = response.text
     cards = re.split(
         r'data-entity-urn="urn:li:jobPosting:',
         html,
@@ -109,13 +178,9 @@ def fetch_linkedin_jobs(query, country="United States", start=0):
                     if location_match
                     else ""
                 ),
-                "job_url": unescape(
-                    url_match.group(1)
-                ).split("?")[0],
+                "job_url": unescape(url_match.group(1)).split("?")[0],
                 "published_at": (
-                    date_match.group(1)
-                    if date_match
-                    else None
+                    date_match.group(1) if date_match else None
                 ),
             }
         )
@@ -128,7 +193,7 @@ def fetch_linkedin_job_details(job_url):
     response = requests.get(
         job_url,
         timeout=20,
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers={"User-Agent": USER_AGENT},
     )
     response.raise_for_status()
 
@@ -146,6 +211,4 @@ def fetch_linkedin_job_details(job_url):
         else ""
     )
 
-    return {
-        "description": description,
-    }
+    return {"description": description}

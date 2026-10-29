@@ -26,3 +26,7 @@ config/settings.py.backup
 .idea/
 .vscode/
 jobs_export.csv
+
+# Excel exports
+linkedin_jobs_export.xlsx
+*_test.xlsx
