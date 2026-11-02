@@ -1,8 +1,8 @@
-import csv
+
 from datetime import datetime
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
 from jobs.models import Job, Company
@@ -12,6 +12,7 @@ HEADERS = [
     "ID",
     "Job ID",
     "Title",
+    "Company ID",
     "Company",
     "URL",
     "Location",
@@ -24,6 +25,11 @@ HEADERS = [
     "Published at",
     "Created at",
     "Updated at",
+    "Company LinkedIn URL",
+    "Company Description",
+    "Company Industry",
+    "Company Website",
+    "Company Employee Count",
 ]
 
 COMPANY_HEADERS = [
@@ -45,6 +51,39 @@ def excel_value(value):
     return value
 
 
+def style_header(sheet, color="1F4E78"):
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(
+            fill_type="solid",
+            fgColor=color,
+        )
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+        )
+
+    sheet.freeze_panes = "A2"
+    sheet.row_dimensions[1].height = 30
+
+
+def auto_adjust_columns(sheet):
+    for column_index, column_cells in enumerate(
+        sheet.iter_cols(), start=1
+    ):
+        max_length = max(
+            (
+                len(str(cell.value or ""))
+                for cell in list(column_cells)[:200]
+            ),
+            default=12,
+        )
+
+        sheet.column_dimensions[
+            get_column_letter(column_index)
+        ].width = min(max(max_length + 2, 12), 45)
+
+
 def get_jobs_data():
     jobs = Job.objects.select_related("company").order_by("id")
 
@@ -55,6 +94,7 @@ def get_jobs_data():
             job.id,
             job.job_id,
             job.title,
+            company.id if company else "",
             company.name if company else "",
             job.job_url,
             job.location,
@@ -67,6 +107,11 @@ def get_jobs_data():
             job.published_at,
             job.created_at,
             job.updated_at,
+            company.linkedin_url if company else "",
+            company.description if company else "",
+            company.industry if company else "",
+            company.website if company else "",
+            company.employee_count if company else "",
         ]
 
 
@@ -87,63 +132,51 @@ def get_companies_data():
         ]
 
 
-def export_jobs(file_path):
-    count = 0
+def export_all_excel(file_path):
+    workbook = Workbook()
 
-    with open(file_path, "w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.writer(file)
-        writer.writerow(HEADERS)
+    # Аркуш вакансій
+    jobs_sheet = workbook.active
+    jobs_sheet.title = "Jobs"
 
-        for row in get_jobs_data():
-            writer.writerow(row)
-            count += 1
+    jobs_sheet.append(HEADERS)
+    style_header(jobs_sheet)
 
-    return count
+    jobs_count = 0
 
+    for row in get_jobs_data():
+        jobs_sheet.append([
+            excel_value(value) for value in row
+        ])
+        jobs_count += 1
 
-def export_companies(file_path):
-    count = 0
+    jobs_sheet.auto_filter.ref = jobs_sheet.dimensions
+    auto_adjust_columns(jobs_sheet)
 
-    with open(file_path, "w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.writer(file)
-        writer.writerow(COMPANY_HEADERS)
+    # Аркуш компаній
+    companies_sheet = workbook.create_sheet("Companies")
 
-        for row in get_companies_data():
-            writer.writerow(row)
-            count += 1
+    companies_sheet.append(COMPANY_HEADERS)
+    style_header(companies_sheet, color="38761D")
 
-    return count
+    companies_count = 0
 
+    for row in get_companies_data():
+        companies_sheet.append([
+            excel_value(value) for value in row
+        ])
+        companies_count += 1
 
-def style_header(sheet, color="1F4E78"):
-    for cell in sheet[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill(
-            fill_type="solid",
-            fgColor=color,
-        )
+    companies_sheet.auto_filter.ref = companies_sheet.dimensions
+    auto_adjust_columns(companies_sheet)
 
-    sheet.freeze_panes = "A2"
+    workbook.save(file_path)
 
-
-def auto_adjust_columns(sheet):
-    for column_index, column_cells in enumerate(
-        sheet.iter_cols(), start=1
-    ):
-        max_length = max(
-            (
-                len(str(cell.value or ""))
-                for cell in list(column_cells)[:200]
-            ),
-            default=12,
-        )
-
-        sheet.column_dimensions[
-            get_column_letter(column_index)
-        ].width = min(max(max_length + 2, 12), 45)
+    return jobs_count, companies_count
 
 
 def export_jobs_excel(file_path):
+    """Експортує лише вакансії в окремий Excel-файл."""
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Jobs"
@@ -154,85 +187,14 @@ def export_jobs_excel(file_path):
     count = 0
 
     for row in get_jobs_data():
-        sheet.append([excel_value(value) for value in row])
+        sheet.append([
+            excel_value(value) for value in row
+        ])
         count += 1
 
     sheet.auto_filter.ref = sheet.dimensions
     auto_adjust_columns(sheet)
 
     workbook.save(file_path)
+
     return count
-
-
-def export_all_excel(file_path):
-    workbook = Workbook()
-
-    # Аркуш вакансій із даними компаній
-    jobs_sheet = workbook.active
-    jobs_sheet.title = "Jobs"
-
-    jobs_headers = HEADERS + [
-        "Company LinkedIn URL",
-        "Company Description",
-        "Company Industry",
-        "Company Website",
-        "Company Employee Count",
-    ]
-
-    jobs_sheet.append(jobs_headers)
-    style_header(jobs_sheet)
-
-    jobs = Job.objects.select_related("company").order_by("id")
-    jobs_count = 0
-
-    for job in jobs.iterator(chunk_size=1000):
-        company = job.company
-
-        row = [
-            job.id,
-            job.job_id,
-            job.title,
-            company.name if company else "",
-            job.job_url,
-            job.location,
-            job.description,
-            job.employment_type,
-            job.seniority,
-            job.details_status,
-            job.attempts,
-            job.last_error,
-            job.published_at,
-            job.created_at,
-            job.updated_at,
-            company.linkedin_url if company else "",
-            company.description if company else "",
-            company.industry if company else "",
-            company.website if company else "",
-            company.employee_count if company else "",
-        ]
-
-        jobs_sheet.append([excel_value(value) for value in row])
-        jobs_count += 1
-
-    jobs_sheet.auto_filter.ref = jobs_sheet.dimensions
-    auto_adjust_columns(jobs_sheet)
-
-    # Окремий аркуш компаній
-    companies_sheet = workbook.create_sheet("Companies")
-    companies_sheet.append(COMPANY_HEADERS)
-    style_header(companies_sheet, color="38761D")
-
-    companies_count = 0
-
-    for row in get_companies_data():
-        companies_sheet.append(
-            [excel_value(value) for value in row]
-        )
-        companies_count += 1
-
-    companies_sheet.auto_filter.ref = companies_sheet.dimensions
-    auto_adjust_columns(companies_sheet)
-
-    workbook.save(file_path)
-
-    return jobs_count, companies_count
