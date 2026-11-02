@@ -34,7 +34,7 @@ Django-застосунок для збору, збереження, оброб�
 ### 1. Клонування репозиторію
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/linkedin-job-parser.git
+git clone https://github.com/Inefan/linkedin-job-parser.git
 cd linkedin-job-parser
 ```
 
